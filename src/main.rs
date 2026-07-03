@@ -203,10 +203,14 @@ fn strip_comments(text: &str, comment_char: char) -> (String, Vec<Option<String>
     let mut code_lines: Vec<String> = Vec::new();
     let mut comments: Vec<Option<String>> = Vec::new();
 
+    // String state persists ACROSS lines so a `;` inside a multi-line
+    // docstring is not mistaken for a comment start (which would eat the
+    // docstring's closing quote on a later line and corrupt paren tracking).
+    let mut in_string = false;
+
     for line in text.split('\n') {
         let bytes = line.as_bytes();
         let len = bytes.len();
-        let mut in_string = false;
         let mut cstart = len;
         let mut i = 0;
 
@@ -559,7 +563,22 @@ fn main() {
     }
 
     // --pipe mode (stdin -> stdout) -----------------------------------------
-    if changed {
+    if args.json {
+        // Machine-readable contract: always emit `fixed` (the text to write,
+        // identical to the source when nothing changed) so consumers can use
+        // `json.fixed` unconditionally.
+        let out = JsonOutput {
+            success: true,
+            changed: Some(changed),
+            error: None,
+            original: Some(source_text.clone()),
+            fixed: Some(fixed_text.clone()),
+            diff: None,
+            mode: args.mode.clone(),
+            language: args.lang.clone(),
+        };
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else if changed {
         if args.diff {
             let diff = make_diff(&source_text, &fixed_text, &filename);
             // Diff goes to stderr, fixed text to stdout
@@ -727,6 +746,17 @@ mod tests {
     }
 
     // --- diff ---------------------------------------------------------------
+
+    #[test]
+    fn semicolon_inside_multiline_docstring_is_safe() {
+        // Regression: a `;` inside a multi-line docstring used to be treated
+        // as a comment start, eating the docstring's closing `"` and breaking
+        // paren tracking ("unmatched-close-paren" / "unclosed-quote").
+        let src = "(defun %getenv (name)\n  \"Read NAME from the process environment, or nil.\nSBCL-fast; degrades to uiop:getenv elsewhere. Never signals.\"\n  form)\n";
+        let (success, error, fixed) = run_parinfer(src, "smart", "lisp");
+        assert!(success, "error: {:?}", error);
+        assert_eq!(fixed, src);
+    }
 
     #[test]
     fn diff_marks_changes() {
